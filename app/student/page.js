@@ -15,6 +15,7 @@ export default function StudentPage() {
   const [payments, setPayments] = useState([]);
   const [announcements, setAnnouncements] = useState([]);
   const [expenses, setExpenses] = useState([]);
+  const [activeCount, setActiveCount] = useState(1);
   const [tab, setTab] = useState("Overview");
 
   useEffect(() => {
@@ -39,18 +40,24 @@ export default function StudentPage() {
   }
 
   async function loadAll(userId) {
-    const [profileRes, fundRes, paymentsRes, announceRes, expenseRes] = await Promise.all([
+    const [profileRes, fundRes, paymentsRes, announceRes, expenseRes, countRes] = await Promise.all([
       supabase.from("profiles").select("*").eq("id", userId).single(),
       supabase.from("fund_settings").select("*").eq("id", 1).single(),
       supabase.from("payments").select("*").eq("student_id", userId).order("created_at", { ascending: false }),
       supabase.from("announcements").select("*").order("created_at", { ascending: false }).limit(20),
-      supabase.from("expenses").select("*").order("spent_on", { ascending: false }).limit(30),
+      supabase
+        .from("expenses")
+        .select("*, expense_students(student_id, profiles(full_name))")
+        .order("spent_on", { ascending: false })
+        .limit(30),
+      supabase.rpc("active_student_count"),
     ]);
     setProfile(profileRes.data || null);
     setFundSettings(fundRes.data || null);
     setPayments(paymentsRes.data || []);
     setAnnouncements(announceRes.data || []);
     setExpenses(expenseRes.data || []);
+    setActiveCount(countRes.data || 1);
   }
 
   async function signOut() {
@@ -59,6 +66,9 @@ export default function StudentPage() {
   }
 
   if (loading) return <div className="loading">Loading your fund page…</div>;
+
+  const myShare = computeMyShare(expenses, user.id, activeCount);
+  const netContribution = Number(profile?.total_contribution || 0) - myShare;
 
   return (
     <div className="page">
@@ -84,7 +94,7 @@ export default function StudentPage() {
 
       <div className="content">
         {tab === "Overview" && (
-          <Overview profile={profile} fundSettings={fundSettings} payments={payments} />
+          <Overview profile={profile} fundSettings={fundSettings} payments={payments} myShare={myShare} netContribution={netContribution} />
         )}
         {tab === "Add Fund" && (
           <AddFund
@@ -95,7 +105,7 @@ export default function StudentPage() {
           />
         )}
         {tab === "Announcements" && <Announcements items={announcements} />}
-        {tab === "Expenses" && <Expenses items={expenses} />}
+        {tab === "Expenses" && <Expenses items={expenses} userId={user.id} activeCount={activeCount} />}
         {tab === "Profile" && (
           <Profile
             user={user}
@@ -108,13 +118,27 @@ export default function StudentPage() {
   );
 }
 
+function computeMyShare(expenses, userId, activeCount) {
+  let share = 0;
+  for (const e of expenses) {
+    const tagged = e.expense_students || [];
+    if (tagged.length > 0) {
+      const included = tagged.some((t) => t.student_id === userId);
+      if (included) share += Number(e.amount) / tagged.length;
+    } else {
+      share += Number(e.amount) / Math.max(activeCount, 1);
+    }
+  }
+  return share;
+}
+
 function daysSince(dateStr) {
   if (!dateStr) return null;
   const diff = Date.now() - new Date(dateStr).getTime();
   return Math.floor(diff / (1000 * 60 * 60 * 24));
 }
 
-function Overview({ profile, fundSettings, payments }) {
+function Overview({ profile, fundSettings, payments, myShare, netContribution }) {
   const lastPayment = payments[0];
   const days = daysSince(lastPayment?.created_at);
 
@@ -142,8 +166,18 @@ function Overview({ profile, fundSettings, payments }) {
           <span className="ledger-amount big">₹{Number(fundSettings?.total_collection || 0).toLocaleString("en-IN")}</span>
         </div>
         <div className="ledger-row">
-          <span className="ledger-label">My contribution</span>
-          <span className="ledger-amount">₹{Number(profile?.total_contribution || 0).toLocaleString("en-IN")}</span>
+          <span className="ledger-label">My contribution (net)</span>
+          <span className="ledger-amount">₹{netContribution.toLocaleString("en-IN", { maximumFractionDigits: 0 })}</span>
+        </div>
+        <div className="ledger-row">
+          <span className="ledger-label">Total paid in</span>
+          <span className="ledger-amount" style={{ fontSize: 15 }}>₹{Number(profile?.total_contribution || 0).toLocaleString("en-IN")}</span>
+        </div>
+        <div className="ledger-row">
+          <span className="ledger-label">My share of expenses</span>
+          <span className="ledger-amount" style={{ fontSize: 15, color: "var(--rust)" }}>
+            −₹{myShare.toLocaleString("en-IN", { maximumFractionDigits: 0 })}
+          </span>
         </div>
       </div>
 
@@ -169,6 +203,7 @@ function Overview({ profile, fundSettings, payments }) {
 function AddFund({ userId, fundSettings, payments, onSubmitted }) {
   const [amount, setAmount] = useState("");
   const [note, setNote] = useState("");
+  const [screenshotFile, setScreenshotFile] = useState(null);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState(null);
 
@@ -188,12 +223,28 @@ function AddFund({ userId, fundSettings, payments, onSubmitted }) {
       setMsg({ type: "err", text: "Enter a valid amount." });
       return;
     }
+    if (!screenshotFile) {
+      setMsg({ type: "err", text: "Please attach a screenshot of your payment as proof." });
+      return;
+    }
     setBusy(true);
+
+    const ext = screenshotFile.name.split(".").pop();
+    const path = `${userId}/${Date.now()}.${ext}`;
+    const { error: upErr } = await supabase.storage.from("payment-proofs").upload(path, screenshotFile);
+    if (upErr) {
+      setBusy(false);
+      setMsg({ type: "err", text: "Screenshot upload failed: " + upErr.message });
+      return;
+    }
+    const { data: pub } = supabase.storage.from("payment-proofs").getPublicUrl(path);
+
     const { error } = await supabase.from("payments").insert({
       student_id: userId,
       amount: amt,
       note: note || null,
       status: "pending",
+      screenshot_url: pub.publicUrl,
     });
     setBusy(false);
     if (error) {
@@ -202,7 +253,13 @@ function AddFund({ userId, fundSettings, payments, onSubmitted }) {
     }
     setAmount("");
     setNote("");
+    setScreenshotFile(null);
     setMsg({ type: "ok", text: "Submitted. It will show as verified once the admin confirms your payment." });
+    onSubmitted();
+  }
+
+  async function deletePending(id) {
+    await supabase.from("payments").delete().eq("id", id);
     onSubmitted();
   }
 
@@ -236,6 +293,15 @@ function AddFund({ userId, fundSettings, payments, onSubmitted }) {
           <label>Reference / UTR number (optional)</label>
           <input type="text" value={note} onChange={(e) => setNote(e.target.value)} placeholder="e.g. UPI ref number" />
         </div>
+        <div className="field">
+          <label>Payment screenshot (required)</label>
+          <input
+            type="file"
+            accept="image/*"
+            required
+            onChange={(e) => setScreenshotFile(e.target.files[0] || null)}
+          />
+        </div>
         <button className="btn" disabled={busy} type="submit">
           {busy ? "Submitting…" : "Submit for verification"}
         </button>
@@ -257,6 +323,24 @@ function AddFund({ userId, fundSettings, payments, onSubmitted }) {
             </div>
             <span className={`stamp ${p.status}`}>{p.status}</span>
           </div>
+          {p.screenshot_url && (
+            <a href={p.screenshot_url} target="_blank" rel="noreferrer">
+              <img
+                src={p.screenshot_url}
+                alt="Payment proof"
+                style={{ width: 70, height: 70, objectFit: "cover", borderRadius: 8, marginTop: 8 }}
+              />
+            </a>
+          )}
+          {p.status === "pending" && (
+            <button
+              className="btn btn-ghost btn-small"
+              style={{ marginTop: 10 }}
+              onClick={() => deletePending(p.id)}
+            >
+              Delete this entry
+            </button>
+          )}
         </div>
       ))}
     </div>
@@ -285,7 +369,7 @@ function Announcements({ items }) {
   );
 }
 
-function Expenses({ items }) {
+function Expenses({ items, userId, activeCount }) {
   const total = items.reduce((sum, e) => sum + Number(e.amount), 0);
   return (
     <div>
@@ -299,20 +383,33 @@ function Expenses({ items }) {
         Expense log <span className="rule" />
       </div>
       {items.length === 0 && <div className="empty">No expenses recorded yet.</div>}
-      {items.map((e) => (
-        <div className="card" key={e.id}>
-          <div className="card-row">
-            <div>
-              <div className="card-title">{e.title}</div>
-              <div className="card-sub">
-                {new Date(e.spent_on).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" })}
-                {e.note ? ` · ${e.note}` : ""}
+      {items.map((e) => {
+        const tagged = e.expense_students || [];
+        const appliesTo =
+          tagged.length > 0 ? tagged.map((t) => t.profiles?.full_name).filter(Boolean).join(", ") : "Whole class";
+        const includesMe = tagged.length > 0 ? tagged.some((t) => t.student_id === userId) : true;
+        const myShare = includesMe ? Number(e.amount) / (tagged.length > 0 ? tagged.length : Math.max(activeCount, 1)) : 0;
+        return (
+          <div className="card" key={e.id}>
+            <div className="card-row">
+              <div>
+                <div className="card-title">{e.title}</div>
+                <div className="card-sub">
+                  {new Date(e.spent_on).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" })}
+                  {e.note ? ` · ${e.note}` : ""}
+                </div>
+                <div className="card-sub" style={{ marginTop: 4 }}>Applies to: {appliesTo}</div>
+                {includesMe && (
+                  <div className="card-sub" style={{ marginTop: 2, color: "var(--rust)" }}>
+                    My share: −₹{myShare.toLocaleString("en-IN", { maximumFractionDigits: 0 })}
+                  </div>
+                )}
               </div>
+              <div className="card-amount">₹{Number(e.amount).toLocaleString("en-IN")}</div>
             </div>
-            <div className="card-amount">₹{Number(e.amount).toLocaleString("en-IN")}</div>
           </div>
-        </div>
-      ))}
+        );
+      })}
     </div>
   );
 }
