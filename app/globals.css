@@ -133,6 +133,8 @@ button {
   border-bottom-color: var(--brass);
 }
 
+/* ---------- ledger stat card (signature element) ---------- */
+
 .ledger-card {
   background: var(--surface);
   border: 1px solid var(--line);
@@ -187,6 +189,8 @@ button {
   background: var(--line);
 }
 
+/* ---------- cards / list items ---------- */
+
 .card {
   background: var(--surface);
   border: 1px solid var(--line);
@@ -229,6 +233,8 @@ button {
   border-radius: 10px;
 }
 
+/* ---------- stamp (verified payment signature element) ---------- */
+
 .stamp {
   display: inline-flex;
   align-items: center;
@@ -253,6 +259,8 @@ button {
   color: var(--rust);
 }
 
+/* ---------- reminder banner ---------- */
+
 .banner {
   background: linear-gradient(135deg, var(--surface-2), var(--surface));
   border: 1px solid var(--brass);
@@ -266,6 +274,8 @@ button {
 .banner strong {
   color: var(--brass-bright);
 }
+
+/* ---------- forms ---------- */
 
 .field {
   margin-bottom: 14px;
@@ -298,6 +308,12 @@ button {
 .field input:focus,
 .field textarea:focus {
   border-color: var(--brass);
+}
+
+.field input[type="file"] {
+  padding: 9px 10px;
+  color: var(--paper-dim);
+  font-size: 13px;
 }
 
 .btn {
@@ -362,6 +378,8 @@ button {
   border: 1px solid rgba(181, 83, 60, 0.35);
 }
 
+/* ---------- login page ---------- */
+
 .login-wrap {
   flex: 1;
   display: flex;
@@ -419,6 +437,8 @@ button {
   font-size: 12.5px;
   margin-top: 22px;
 }
+
+/* ---------- qr ---------- */
 
 .qr-box {
   display: flex;
