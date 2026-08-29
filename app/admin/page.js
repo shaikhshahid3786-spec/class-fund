@@ -191,13 +191,16 @@ export default function AdminPage() {
 function AdminOverview({ students, payments, expenses, fundSettings, actions, onExport }) {
   const pending = payments.filter((p) => p.status === "pending");
   const totalExpenses = expenses.reduce((s, e) => s + Number(e.amount), 0);
+  const goal = Number(fundSettings?.goal_amount || 0);
+  const collected = Number(fundSettings?.total_collection || 0);
+  const pct = goal > 0 ? Math.min(100, Math.round((collected / goal) * 100)) : null;
 
   return (
     <div>
       <div className="ledger-card">
         <div className="ledger-row">
           <span className="ledger-label">Total collection</span>
-          <span className="ledger-amount big">₹{Number(fundSettings?.total_collection || 0).toLocaleString("en-IN")}</span>
+          <span className="ledger-amount big">₹{collected.toLocaleString("en-IN")}</span>
         </div>
         <div className="ledger-row">
           <span className="ledger-label">Total spent</span>
@@ -205,8 +208,19 @@ function AdminOverview({ students, payments, expenses, fundSettings, actions, on
         </div>
         <div className="ledger-row">
           <span className="ledger-label">Balance in hand</span>
-          <span className="ledger-amount">₹{(Number(fundSettings?.total_collection || 0) - totalExpenses).toLocaleString("en-IN")}</span>
+          <span className="ledger-amount">₹{(collected - totalExpenses).toLocaleString("en-IN")}</span>
         </div>
+        {goal > 0 && (
+          <div style={{ paddingTop: 12 }}>
+            <div className="ledger-row" style={{ border: "none", padding: "0 0 4px" }}>
+              <span className="ledger-label">Goal: ₹{goal.toLocaleString("en-IN")}</span>
+              <span className="ledger-label">{pct}%</span>
+            </div>
+            <div className="progress-track">
+              <div className="progress-fill" style={{ width: `${pct}%` }} />
+            </div>
+          </div>
+        )}
       </div>
       <div className="ledger-card">
         <div className="ledger-row">
@@ -521,217 +535,4 @@ function Expenses({ expenses, students, onChanged, userId }) {
 
   return (
     <div>
-      <div className="section-title">
-        Add expense <span className="rule" />
-      </div>
-      <form onSubmit={add}>
-        <div className="field">
-          <label>Title</label>
-          <input type="text" value={title} onChange={(e) => setTitle(e.target.value)} required />
-        </div>
-        <div className="field">
-          <label>Amount (₹)</label>
-          <input type="number" min="1" step="1" value={amount} onChange={(e) => setAmount(e.target.value)} required />
-        </div>
-        <div className="field">
-          <label>Date</label>
-          <input type="date" value={spentOn} onChange={(e) => setSpentOn(e.target.value)} required />
-        </div>
-        <div className="field">
-          <label>Note (optional)</label>
-          <input type="text" value={note} onChange={(e) => setNote(e.target.value)} />
-        </div>
-
-        <div className="field">
-          <label>Applies to</label>
-          <div style={{ display: "flex", gap: 8, marginBottom: applyWhole ? 0 : 10 }}>
-            <button
-              type="button"
-              className={`btn btn-small ${applyWhole ? "" : "btn-ghost"}`}
-              onClick={() => setApplyWhole(true)}
-            >
-              Whole class
-            </button>
-            <button
-              type="button"
-              className={`btn btn-small ${!applyWhole ? "" : "btn-ghost"}`}
-              onClick={() => setApplyWhole(false)}
-            >
-              Specific students
-            </button>
-          </div>
-          {!applyWhole && (
-            <div style={{ maxHeight: 200, overflowY: "auto", border: "1px solid var(--line)", borderRadius: 9, padding: 10 }}>
-              {students.map((s) => (
-                <label key={s.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 0", fontSize: 13.5 }}>
-                  <input
-                    type="checkbox"
-                    checked={selectedStudents.includes(s.id)}
-                    onChange={(e) => {
-                      setSelectedStudents((prev) =>
-                        e.target.checked ? [...prev, s.id] : prev.filter((id) => id !== s.id)
-                      );
-                    }}
-                  />
-                  {s.full_name || s.email}
-                </label>
-              ))}
-            </div>
-          )}
-        </div>
-
-        <button className="btn" disabled={busy} type="submit">
-          {busy ? "Adding…" : "Add expense"}
-        </button>
-      </form>
-
-      <div className="section-title">
-        All expenses <span className="rule" />
-      </div>
-      {expenses.map((e) => {
-        const tagged = e.expense_students || [];
-        const appliesTo = tagged.length > 0 ? tagged.map((t) => t.profiles?.full_name).filter(Boolean).join(", ") : "Whole class";
-        return (
-          <div className="card" key={e.id}>
-            <div className="card-row">
-              <div>
-                <div className="card-title">{e.title}</div>
-                <div className="card-sub">
-                  {new Date(e.spent_on).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" })}
-                  {e.note ? ` · ${e.note}` : ""}
-                </div>
-                <div className="card-sub" style={{ marginTop: 4 }}>Applies to: {appliesTo}</div>
-              </div>
-              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                <div className="card-amount">₹{Number(e.amount).toLocaleString("en-IN")}</div>
-                <button className="btn btn-ghost btn-small" onClick={() => remove(e.id)}>
-                  Delete
-                </button>
-              </div>
-            </div>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
-function Announcements({ items, onChanged, userId }) {
-  const [title, setTitle] = useState("");
-  const [body, setBody] = useState("");
-  const [busy, setBusy] = useState(false);
-
-  async function add(e) {
-    e.preventDefault();
-    setBusy(true);
-    await supabase.from("announcements").insert({ title, body, created_by: userId });
-    setBusy(false);
-    setTitle("");
-    setBody("");
-    onChanged();
-  }
-
-  async function remove(id) {
-    await supabase.from("announcements").delete().eq("id", id);
-    onChanged();
-  }
-
-  return (
-    <div>
-      <div className="section-title">
-        Post announcement <span className="rule" />
-      </div>
-      <form onSubmit={add}>
-        <div className="field">
-          <label>Title</label>
-          <input type="text" value={title} onChange={(e) => setTitle(e.target.value)} required />
-        </div>
-        <div className="field">
-          <label>Message</label>
-          <textarea value={body} onChange={(e) => setBody(e.target.value)} required />
-        </div>
-        <button className="btn" disabled={busy} type="submit">
-          {busy ? "Posting…" : "Post announcement"}
-        </button>
-      </form>
-
-      <div className="section-title">
-        Posted <span className="rule" />
-      </div>
-      {items.map((a) => (
-        <div className="card" key={a.id}>
-          <div className="card-row">
-            <div className="card-title">{a.title}</div>
-            <button className="btn btn-ghost btn-small" onClick={() => remove(a.id)}>
-              Delete
-            </button>
-          </div>
-          <div className="card-sub" style={{ marginTop: 6, lineHeight: 1.5 }}>
-            {a.body}
-          </div>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function PaymentSetup({ fundSettings, onChanged }) {
-  const [upiId, setUpiId] = useState(fundSettings?.upi_id || "");
-  const [payeeName, setPayeeName] = useState(fundSettings?.payee_name || "");
-  const [busy, setBusy] = useState(false);
-  const [msg, setMsg] = useState(null);
-
-  const qrUrl = upiId
-    ? `https://api.qrserver.com/v1/create-qr-code/?size=240x240&data=${encodeURIComponent(
-        `upi://pay?pa=${upiId}&pn=${encodeURIComponent(payeeName || "Class Fund")}&cu=INR`
-      )}`
-    : null;
-
-  async function save(e) {
-    e.preventDefault();
-    setBusy(true);
-    setMsg(null);
-    const { error } = await supabase
-      .from("fund_settings")
-      .update({ upi_id: upiId, payee_name: payeeName })
-      .eq("id", 1);
-    setBusy(false);
-    if (error) {
-      setMsg({ type: "err", text: error.message });
-      return;
-    }
-    setMsg({ type: "ok", text: "Payment details updated. The QR below is what students will see." });
-    onChanged();
-  }
-
-  return (
-    <div>
-      <div className="section-title">
-        Payment details <span className="rule" />
-      </div>
-      <form onSubmit={save}>
-        {msg && <div className={`msg ${msg.type}`}>{msg.text}</div>}
-        <div className="field">
-          <label>UPI ID</label>
-          <input type="text" value={upiId} onChange={(e) => setUpiId(e.target.value)} placeholder="yourname@bank" required />
-        </div>
-        <div className="field">
-          <label>Payee name (shown to students)</label>
-          <input type="text" value={payeeName} onChange={(e) => setPayeeName(e.target.value)} placeholder="Class Fund" />
-        </div>
-        <button className="btn" disabled={busy} type="submit">
-          {busy ? "Saving…" : "Save payment details"}
-        </button>
-      </form>
-
-      {qrUrl && (
-        <div className="ledger-card" style={{ marginTop: 18 }}>
-          <div className="qr-box">
-            <img src={qrUrl} alt="UPI QR preview" />
-            <div className="card-sub">This QR is generated automatically from your UPI ID — nothing to upload.</div>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
+      <d
