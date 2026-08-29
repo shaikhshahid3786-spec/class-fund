@@ -133,8 +133,6 @@ button {
   border-bottom-color: var(--brass);
 }
 
-/* ---------- ledger stat card (signature element) ---------- */
-
 .ledger-card {
   background: var(--surface);
   border: 1px solid var(--line);
@@ -189,8 +187,6 @@ button {
   background: var(--line);
 }
 
-/* ---------- cards / list items ---------- */
-
 .card {
   background: var(--surface);
   border: 1px solid var(--line);
@@ -233,8 +229,6 @@ button {
   border-radius: 10px;
 }
 
-/* ---------- stamp (verified payment signature element) ---------- */
-
 .stamp {
   display: inline-flex;
   align-items: center;
@@ -259,8 +253,6 @@ button {
   color: var(--rust);
 }
 
-/* ---------- reminder banner ---------- */
-
 .banner {
   background: linear-gradient(135deg, var(--surface-2), var(--surface));
   border: 1px solid var(--brass);
@@ -274,8 +266,6 @@ button {
 .banner strong {
   color: var(--brass-bright);
 }
-
-/* ---------- forms ---------- */
 
 .field {
   margin-bottom: 14px;
@@ -438,8 +428,6 @@ button {
   margin-top: 22px;
 }
 
-/* ---------- qr ---------- */
-
 .qr-box {
   display: flex;
   flex-direction: column;
@@ -465,6 +453,20 @@ button {
   letter-spacing: 0.02em;
 }
 
+.progress-track {
+  background: var(--surface-2);
+  border-radius: 999px;
+  height: 10px;
+  overflow: hidden;
+  margin-top: 10px;
+}
+
+.progress-fill {
+  height: 100%;
+  background: var(--brass);
+  border-radius: 999px;
+}
+
 .loading {
   display: flex;
   align-items: center;
@@ -472,4 +474,4 @@ button {
   min-height: 100vh;
   color: var(--paper-dim);
   font-size: 14px;
-}
+  }
