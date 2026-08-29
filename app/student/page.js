@@ -16,6 +16,7 @@ export default function StudentPage() {
   const [announcements, setAnnouncements] = useState([]);
   const [expenses, setExpenses] = useState([]);
   const [activeCount, setActiveCount] = useState(1);
+  const [leaderboard, setLeaderboard] = useState([]);
   const [tab, setTab] = useState("Overview");
 
   useEffect(() => {
@@ -40,7 +41,7 @@ export default function StudentPage() {
   }
 
   async function loadAll(userId) {
-    const [profileRes, fundRes, paymentsRes, announceRes, expenseRes, countRes] = await Promise.all([
+    const [profileRes, fundRes, paymentsRes, announceRes, expenseRes, countRes, leaderRes] = await Promise.all([
       supabase.from("profiles").select("*").eq("id", userId).single(),
       supabase.from("fund_settings").select("*").eq("id", 1).single(),
       supabase.from("payments").select("*").eq("student_id", userId).order("created_at", { ascending: false }),
@@ -51,6 +52,7 @@ export default function StudentPage() {
         .order("spent_on", { ascending: false })
         .limit(30),
       supabase.rpc("active_student_count"),
+      supabase.from("leaderboard").select("*").order("total_contribution", { ascending: false }).limit(10),
     ]);
     setProfile(profileRes.data || null);
     setFundSettings(fundRes.data || null);
@@ -58,6 +60,7 @@ export default function StudentPage() {
     setAnnouncements(announceRes.data || []);
     setExpenses(expenseRes.data || []);
     setActiveCount(countRes.data || 1);
+    setLeaderboard(leaderRes.data || []);
   }
 
   async function signOut() {
@@ -94,7 +97,14 @@ export default function StudentPage() {
 
       <div className="content">
         {tab === "Overview" && (
-          <Overview profile={profile} fundSettings={fundSettings} payments={payments} myShare={myShare} netContribution={netContribution} />
+          <Overview
+            profile={profile}
+            fundSettings={fundSettings}
+            payments={payments}
+            myShare={myShare}
+            netContribution={netContribution}
+            leaderboard={leaderboard}
+          />
         )}
         {tab === "Add Fund" && (
           <AddFund
@@ -138,9 +148,12 @@ function daysSince(dateStr) {
   return Math.floor(diff / (1000 * 60 * 60 * 24));
 }
 
-function Overview({ profile, fundSettings, payments, myShare, netContribution }) {
+function Overview({ profile, fundSettings, payments, myShare, netContribution, leaderboard }) {
   const lastPayment = payments[0];
   const days = daysSince(lastPayment?.created_at);
+  const goal = Number(fundSettings?.goal_amount || 0);
+  const collected = Number(fundSettings?.total_collection || 0);
+  const pct = goal > 0 ? Math.min(100, Math.round((collected / goal) * 100)) : null;
 
   let reminder = null;
   if (days === null) {
@@ -163,7 +176,7 @@ function Overview({ profile, fundSettings, payments, myShare, netContribution })
       <div className="ledger-card">
         <div className="ledger-row">
           <span className="ledger-label">Total class collection</span>
-          <span className="ledger-amount big">₹{Number(fundSettings?.total_collection || 0).toLocaleString("en-IN")}</span>
+          <span className="ledger-amount big">₹{collected.toLocaleString("en-IN")}</span>
         </div>
         <div className="ledger-row">
           <span className="ledger-label">My contribution (net)</span>
@@ -179,7 +192,36 @@ function Overview({ profile, fundSettings, payments, myShare, netContribution })
             −₹{myShare.toLocaleString("en-IN", { maximumFractionDigits: 0 })}
           </span>
         </div>
+        {goal > 0 && (
+          <div style={{ paddingTop: 12 }}>
+            <div className="ledger-row" style={{ border: "none", padding: "0 0 4px" }}>
+              <span className="ledger-label">Goal: ₹{goal.toLocaleString("en-IN")}</span>
+              <span className="ledger-label">{pct}%</span>
+            </div>
+            <div className="progress-track">
+              <div className="progress-fill" style={{ width: `${pct}%` }} />
+            </div>
+          </div>
+        )}
       </div>
+
+      {leaderboard.length > 0 && (
+        <>
+          <div className="section-title">
+            Top contributors <span className="rule" />
+          </div>
+          {leaderboard.slice(0, 5).map((l, i) => (
+            <div className="card" key={l.id}>
+              <div className="card-row">
+                <div className="card-title">
+                  #{i + 1} {l.full_name || "Anonymous"}
+                </div>
+                <div className="card-amount">₹{Number(l.total_contribution || 0).toLocaleString("en-IN")}</div>
+              </div>
+            </div>
+          ))}
+        </>
+      )}
 
       <div className="section-title">
         Recent activity <span className="rule" />
@@ -462,4 +504,4 @@ function Profile({ user, profile, onSaved }) {
       </form>
     </div>
   );
-}
+         }
