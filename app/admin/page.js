@@ -257,6 +257,7 @@ function AdminOverview({ students, payments, expenses, fundSettings, actions, on
 function Students({ students, fundSettings, onChanged, onLog }) {
   const [confirmId, setConfirmId] = useState(null);
   const [resetId, setResetId] = useState(null);
+  const [deleteId, setDeleteId] = useState(null);
   const [busy, setBusy] = useState(false);
   const [search, setSearch] = useState("");
 
@@ -302,6 +303,15 @@ function Students({ students, fundSettings, onChanged, onLog }) {
     onChanged();
   }
 
+  async function deleteStudent(s) {
+    setBusy(true);
+    await supabase.from("profiles").delete().eq("id", s.id);
+    await onLog("Deleted student record", `${s.full_name || s.email} removed from the list`);
+    setBusy(false);
+    setDeleteId(null);
+    onChanged();
+  }
+
   const filtered = students.filter((s) => {
     const q = search.trim().toLowerCase();
     if (!q) return true;
@@ -319,8 +329,9 @@ function Students({ students, fundSettings, onChanged, onLog }) {
       <div className="card" style={{ marginBottom: 16 }}>
         <div className="card-sub" style={{ lineHeight: 1.5 }}>
           Students appear here automatically the first time they sign in with Google — there's nothing to
-          add manually. To fully delete a person's account, remove them from the Supabase dashboard under
-          Authentication.
+          add manually. "Delete from list" only appears after deactivating someone, and removes their
+          record here (their old Google account itself isn't blocked — do that from the Supabase
+          dashboard under Authentication if needed).
         </div>
       </div>
       {filtered.map((s) => (
@@ -373,6 +384,22 @@ function Students({ students, fundSettings, onChanged, onLog }) {
                 Reset contribution
               </button>
             )}
+
+            {s.active === false &&
+              (deleteId === s.id ? (
+                <>
+                  <button className="btn btn-danger btn-small" disabled={busy} onClick={() => deleteStudent(s)}>
+                    Confirm delete permanently
+                  </button>
+                  <button className="btn btn-ghost btn-small" disabled={busy} onClick={() => setDeleteId(null)}>
+                    Cancel
+                  </button>
+                </>
+              ) : (
+                <button className="btn btn-ghost btn-small" onClick={() => setDeleteId(s.id)}>
+                  Delete from list
+                </button>
+              ))}
           </div>
         </div>
       ))}
