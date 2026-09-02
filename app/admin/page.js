@@ -4,20 +4,20 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { supabase, ADMIN_EMAIL } from "../../lib/supabaseClient";
 
-const TABS = ["Overview", "Add Fund", "Announcements", "Expenses", "Profile"];
+const TABS = ["Overview", "Students", "Payments", "Expenses", "Announcements", "Payment Setup"];
 
-export default function StudentPage() {
+export default function AdminPage() {
   const router = useRouter();
   const [loading, setLoading] = useState(true);
   const [user, setUser] = useState(null);
-  const [profile, setProfile] = useState(null);
-  const [fundSettings, setFundSettings] = useState(null);
-  const [payments, setPayments] = useState([]);
-  const [announcements, setAnnouncements] = useState([]);
-  const [expenses, setExpenses] = useState([]);
-  const [activeCount, setActiveCount] = useState(1);
-  const [leaderboard, setLeaderboard] = useState([]);
   const [tab, setTab] = useState("Overview");
+
+  const [students, setStudents] = useState([]);
+  const [payments, setPayments] = useState([]);
+  const [expenses, setExpenses] = useState([]);
+  const [announcements, setAnnouncements] = useState([]);
+  const [fundSettings, setFundSettings] = useState(null);
+  const [actions, setActions] = useState([]);
 
   useEffect(() => {
     init();
@@ -31,36 +31,40 @@ export default function StudentPage() {
       router.replace("/");
       return;
     }
-    if (session.user.email === ADMIN_EMAIL) {
-      router.replace("/admin");
+    if (session.user.email !== ADMIN_EMAIL) {
+      router.replace("/student");
       return;
     }
     setUser(session.user);
-    await loadAll(session.user.id);
+    await loadAll();
     setLoading(false);
   }
 
-  async function loadAll(userId) {
-    const [profileRes, fundRes, paymentsRes, announceRes, expenseRes, countRes, leaderRes] = await Promise.all([
-      supabase.from("profiles").select("*").eq("id", userId).single(),
-      supabase.from("fund_settings").select("*").eq("id", 1).single(),
-      supabase.from("payments").select("*").eq("student_id", userId).order("created_at", { ascending: false }),
-      supabase.from("announcements").select("*").order("created_at", { ascending: false }).limit(20),
+  async function loadAll() {
+    const [studentsRes, paymentsRes, expensesRes, announceRes, fundRes, actionsRes] = await Promise.all([
+      supabase.from("profiles").select("*").order("full_name", { ascending: true }),
+      supabase
+        .from("payments")
+        .select("*, profiles(full_name, email)")
+        .order("created_at", { ascending: false }),
       supabase
         .from("expenses")
         .select("*, expense_students(student_id, profiles(full_name))")
-        .order("spent_on", { ascending: false })
-        .limit(30),
-      supabase.rpc("active_student_count"),
-      supabase.from("leaderboard").select("*").order("total_contribution", { ascending: false }).limit(10),
+        .order("spent_on", { ascending: false }),
+      supabase.from("announcements").select("*").order("created_at", { ascending: false }),
+      supabase.from("fund_settings").select("*").eq("id", 1).single(),
+      supabase.from("admin_actions").select("*").order("created_at", { ascending: false }).limit(15),
     ]);
-    setProfile(profileRes.data || null);
-    setFundSettings(fundRes.data || null);
+    setStudents(studentsRes.data || []);
     setPayments(paymentsRes.data || []);
+    setExpenses(expensesRes.data || []);
     setAnnouncements(announceRes.data || []);
-    setExpenses(expenseRes.data || []);
-    setActiveCount(countRes.data || 1);
-    setLeaderboard(leaderRes.data || []);
+    setFundSettings(fundRes.data || null);
+    setActions(actionsRes.data || []);
+  }
+
+  async function logAction(action, details) {
+    await supabase.from("admin_actions").insert({ action, details, performed_by: user.id });
   }
 
   async function signOut() {
@@ -68,19 +72,81 @@ export default function StudentPage() {
     router.replace("/");
   }
 
-  if (loading) return <div className="loading">Loading your fund page…</div>;
+  async function exportExcel() {
+    const XLSX = await import("xlsx");
+    const [studentsRes, paymentsRes, expensesRes, announceRes] = await Promise.all([
+      supabase.from("profiles").select("*"),
+      supabase.from("payments").select("*, profiles(full_name,email)"),
+      supabase.from("expenses").select("*"),
+      supabase.from("announcements").select("*"),
+    ]);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(
+      wb,
+      XLSX.utils.json_to_sheet(
+        (studentsRes.data || []).map((s) => ({
+          Name: s.full_name,
+          Email: s.email,
+          Phone: s.phone,
+          Contribution: s.total_contribution,
+          Active: s.active,
+          ExcludedFromTotal: s.contribution_excluded,
+        }))
+      ),
+      "Students"
+    );
+    XLSX.utils.book_append_sheet(
+      wb,
+      XLSX.utils.json_to_sheet(
+        (paymentsRes.data || []).map((p) => ({
+          Student: p.profiles?.full_name || p.profiles?.email,
+          Amount: p.amount,
+          Status: p.status,
+          Note: p.note,
+          SubmittedAt: p.created_at,
+          VerifiedAt: p.verified_at,
+        }))
+      ),
+      "Payments"
+    );
+    XLSX.utils.book_append_sheet(
+      wb,
+      XLSX.utils.json_to_sheet(
+        (expensesRes.data || []).map((e) => ({
+          Title: e.title,
+          Amount: e.amount,
+          Date: e.spent_on,
+          Note: e.note,
+        }))
+      ),
+      "Expenses"
+    );
+    XLSX.utils.book_append_sheet(
+      wb,
+      XLSX.utils.json_to_sheet(
+        (announceRes.data || []).map((a) => ({
+          Title: a.title,
+          Body: a.body,
+          PostedAt: a.created_at,
+        }))
+      ),
+      "Announcements"
+    );
+    XLSX.writeFile(wb, `class-fund-${new Date().toISOString().slice(0, 10)}.xlsx`);
+  }
 
-  const myShare = computeMyShare(expenses, user.id, activeCount);
-  const netContribution = Number(profile?.total_contribution || 0) - myShare;
+  if (loading) return <div className="loading">Loading admin panel…</div>;
+
+  const pendingCount = payments.filter((p) => p.status === "pending").length;
 
   return (
     <div className="page">
       <div className="topbar">
         <div className="brand">
-          <span className="brand-mark">◆</span> Class Fund
+          <span className="brand-mark">◆</span> Class Fund <span style={{ color: "var(--brass)", fontSize: 12 }}>Admin</span>
         </div>
         <div className="topbar-right">
-          {profile?.full_name || user?.email}
+          {user?.email}
           <button className="signout" onClick={signOut}>
             Sign out
           </button>
@@ -90,108 +156,59 @@ export default function StudentPage() {
       <div className="tabs">
         {TABS.map((t) => (
           <button key={t} className={`tab ${tab === t ? "active" : ""}`} onClick={() => setTab(t)}>
-            {t}
+            {t} {t === "Payments" && pendingCount > 0 ? `(${pendingCount})` : ""}
           </button>
         ))}
       </div>
 
       <div className="content">
         {tab === "Overview" && (
-          <Overview
-            profile={profile}
-            fundSettings={fundSettings}
+          <AdminOverview
+            students={students}
             payments={payments}
-            myShare={myShare}
-            netContribution={netContribution}
-            leaderboard={leaderboard}
-          />
-        )}
-        {tab === "Add Fund" && (
-          <AddFund
-            userId={user.id}
+            expenses={expenses}
             fundSettings={fundSettings}
-            payments={payments}
-            onSubmitted={() => loadAll(user.id)}
+            actions={actions}
+            onExport={exportExcel}
           />
         )}
-        {tab === "Announcements" && <Announcements items={announcements} />}
-        {tab === "Expenses" && <Expenses items={expenses} userId={user.id} activeCount={activeCount} />}
-        {tab === "Profile" && (
-          <Profile
-            user={user}
-            profile={profile}
-            onSaved={() => loadAll(user.id)}
-          />
+        {tab === "Students" && (
+          <Students students={students} fundSettings={fundSettings} onChanged={loadAll} onLog={logAction} />
         )}
+        {tab === "Payments" && (
+          <Payments payments={payments} fundSettings={fundSettings} onChanged={loadAll} onLog={logAction} />
+        )}
+        {tab === "Expenses" && (
+          <Expenses expenses={expenses} students={students} onChanged={loadAll} userId={user.id} />
+        )}
+        {tab === "Announcements" && <Announcements items={announcements} onChanged={loadAll} userId={user.id} />}
+        {tab === "Payment Setup" && <PaymentSetup fundSettings={fundSettings} onChanged={loadAll} />}
       </div>
     </div>
   );
 }
 
-function computeMyShare(expenses, userId, activeCount) {
-  let share = 0;
-  for (const e of expenses) {
-    const tagged = e.expense_students || [];
-    if (tagged.length > 0) {
-      const included = tagged.some((t) => t.student_id === userId);
-      if (included) share += Number(e.amount) / tagged.length;
-    } else {
-      // whole class
-      share += Number(e.amount) / Math.max(activeCount, 1);
-    }
-  }
-  return share;
-}
-
-function daysSince(dateStr) {
-  if (!dateStr) return null;
-  const diff = Date.now() - new Date(dateStr).getTime();
-  return Math.floor(diff / (1000 * 60 * 60 * 24));
-}
-
-function Overview({ profile, fundSettings, payments, myShare, netContribution, leaderboard }) {
-  const lastPayment = payments[0];
-  const days = daysSince(lastPayment?.created_at);
+function AdminOverview({ students, payments, expenses, fundSettings, actions, onExport }) {
+  const pending = payments.filter((p) => p.status === "pending");
+  const totalExpenses = expenses.reduce((s, e) => s + Number(e.amount), 0);
   const goal = Number(fundSettings?.goal_amount || 0);
   const collected = Number(fundSettings?.total_collection || 0);
   const pct = goal > 0 ? Math.min(100, Math.round((collected / goal) * 100)) : null;
 
-  let reminder = null;
-  if (days === null) {
-    reminder = "You haven't added a contribution yet — head to Add Fund to make your first one.";
-  } else if (days >= 30) {
-    reminder = `It's been ${days} days since your last contribution. Your monthly top-up is due.`;
-  } else if (days >= 7) {
-    reminder = `It's been ${days} days since your last contribution. A weekly top-up keeps you on track.`;
-  }
-
   return (
     <div>
-      {reminder && (
-        <div className="banner">
-          <strong>Reminder — </strong>
-          {reminder}
-        </div>
-      )}
-
       <div className="ledger-card">
         <div className="ledger-row">
-          <span className="ledger-label">Total class collection</span>
+          <span className="ledger-label">Total collection</span>
           <span className="ledger-amount big">₹{collected.toLocaleString("en-IN")}</span>
         </div>
         <div className="ledger-row">
-          <span className="ledger-label">My contribution (net)</span>
-          <span className="ledger-amount">₹{netContribution.toLocaleString("en-IN", { maximumFractionDigits: 0 })}</span>
+          <span className="ledger-label">Total spent</span>
+          <span className="ledger-amount">₹{totalExpenses.toLocaleString("en-IN")}</span>
         </div>
         <div className="ledger-row">
-          <span className="ledger-label">Total paid in</span>
-          <span className="ledger-amount" style={{ fontSize: 15 }}>₹{Number(profile?.total_contribution || 0).toLocaleString("en-IN")}</span>
-        </div>
-        <div className="ledger-row">
-          <span className="ledger-label">My share of expenses</span>
-          <span className="ledger-amount" style={{ fontSize: 15, color: "var(--rust)" }}>
-            −₹{myShare.toLocaleString("en-IN", { maximumFractionDigits: 0 })}
-          </span>
+          <span className="ledger-label">Balance in hand</span>
+          <span className="ledger-amount">₹{(collected - totalExpenses).toLocaleString("en-IN")}</span>
         </div>
         {goal > 0 && (
           <div style={{ paddingTop: 12 }}>
@@ -205,37 +222,31 @@ function Overview({ profile, fundSettings, payments, myShare, netContribution, l
           </div>
         )}
       </div>
+      <div className="ledger-card">
+        <div className="ledger-row">
+          <span className="ledger-label">Students</span>
+          <span className="ledger-amount">{students.length}</span>
+        </div>
+        <div className="ledger-row">
+          <span className="ledger-label">Payments awaiting verification</span>
+          <span className="ledger-amount">{pending.length}</span>
+        </div>
+      </div>
 
-      {leaderboard.length > 0 && (
-        <>
-          <div className="section-title">
-            Top contributors <span className="rule" />
-          </div>
-          {leaderboard.slice(0, 5).map((l, i) => (
-            <div className="card" key={l.id}>
-              <div className="card-row">
-                <div className="card-title">
-                  #{i + 1} {l.full_name || "Anonymous"}
-                </div>
-                <div className="card-amount">₹{Number(l.total_contribution || 0).toLocaleString("en-IN")}</div>
-              </div>
-            </div>
-          ))}
-        </>
-      )}
+      <button className="btn" style={{ marginTop: 4 }} onClick={onExport}>
+        Download all data (Excel)
+      </button>
 
       <div className="section-title">
-        Recent activity <span className="rule" />
+        Recent admin activity <span className="rule" />
       </div>
-      {payments.length === 0 && <div className="empty">No contributions submitted yet.</div>}
-      {payments.slice(0, 6).map((p) => (
-        <div className="card" key={p.id}>
-          <div className="card-row">
-            <div>
-              <div className="card-title">₹{Number(p.amount).toLocaleString("en-IN")}</div>
-              <div className="card-sub">{new Date(p.created_at).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" })}</div>
-            </div>
-            <span className={`stamp ${p.status}`}>{p.status}</span>
+      {actions.length === 0 && <div className="empty">No corrections logged yet.</div>}
+      {actions.map((a) => (
+        <div className="card" key={a.id}>
+          <div className="card-title">{a.action}</div>
+          {a.details && <div className="card-sub" style={{ marginTop: 4 }}>{a.details}</div>}
+          <div className="card-sub" style={{ marginTop: 4 }}>
+            {new Date(a.created_at).toLocaleString("en-IN")}
           </div>
         </div>
       ))}
@@ -243,155 +254,215 @@ function Overview({ profile, fundSettings, payments, myShare, netContribution, l
   );
 }
 
-function AddFund({ userId, fundSettings, payments, onSubmitted }) {
-  const [amount, setAmount] = useState("");
-  const [note, setNote] = useState("");
-  const [screenshotFile, setScreenshotFile] = useState(null);
+function Students({ students, fundSettings, onChanged, onLog }) {
+  const [confirmId, setConfirmId] = useState(null);
+  const [resetId, setResetId] = useState(null);
   const [busy, setBusy] = useState(false);
-  const [msg, setMsg] = useState(null);
+  const [search, setSearch] = useState("");
 
-  const upiId = fundSettings?.upi_id;
-  const payeeName = fundSettings?.payee_name || "Class Fund";
-  const amt = parseFloat(amount);
-  const qrUrl = upiId
-    ? `https://api.qrserver.com/v1/create-qr-code/?size=240x240&data=${encodeURIComponent(
-        `upi://pay?pa=${upiId}&pn=${encodeURIComponent(payeeName)}&cu=INR`
-      )}`
-    : null;
-  const upiLink = upiId
-    ? `upi://pay?pa=${upiId}&pn=${encodeURIComponent(payeeName)}&cu=INR${amt && amt > 0 ? `&am=${amt}` : ""}`
-    : null;
-
-  async function downloadQR() {
-    if (!qrUrl) return;
-    try {
-      const res = await fetch(qrUrl);
-      const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = "class-fund-qr.png";
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-    } catch {
-      window.open(qrUrl, "_blank");
-    }
-  }
-
-  async function submit(e) {
-    e.preventDefault();
-    setMsg(null);
-    const amt = parseFloat(amount);
-    if (!amt || amt <= 0) {
-      setMsg({ type: "err", text: "Enter a valid amount." });
-      return;
-    }
-    if (!screenshotFile) {
-      setMsg({ type: "err", text: "Please attach a screenshot of your payment as proof." });
-      return;
-    }
+  async function deactivate(s, removeFromTotal) {
     setBusy(true);
-
-    const ext = screenshotFile.name.split(".").pop();
-    const path = `${userId}/${Date.now()}.${ext}`;
-    const { error: upErr } = await supabase.storage.from("payment-proofs").upload(path, screenshotFile);
-    if (upErr) {
-      setBusy(false);
-      setMsg({ type: "err", text: "Screenshot upload failed: " + upErr.message });
-      return;
+    await supabase.from("profiles").update({ active: false, contribution_excluded: removeFromTotal }).eq("id", s.id);
+    if (removeFromTotal) {
+      const newTotal = Number(fundSettings?.total_collection || 0) - Number(s.total_contribution || 0);
+      await supabase.from("fund_settings").update({ total_collection: newTotal, updated_at: new Date().toISOString() }).eq("id", 1);
     }
-    const { data: pub } = supabase.storage.from("payment-proofs").getPublicUrl(path);
-
-    const { error } = await supabase.from("payments").insert({
-      student_id: userId,
-      amount: amt,
-      note: note || null,
-      status: "pending",
-      screenshot_url: pub.publicUrl,
-    });
+    await onLog(
+      "Deactivated student",
+      `${s.full_name || s.email} — ${removeFromTotal ? "removed" : "kept"} ₹${Number(s.total_contribution || 0).toLocaleString("en-IN")} in total`
+    );
     setBusy(false);
-    if (error) {
-      setMsg({ type: "err", text: error.message });
-      return;
-    }
-    setAmount("");
-    setNote("");
-    setScreenshotFile(null);
-    setMsg({ type: "ok", text: "Submitted. It will show as verified once the admin confirms your payment." });
-    onSubmitted();
+    setConfirmId(null);
+    onChanged();
   }
 
-  async function deletePending(id) {
-    await supabase.from("payments").delete().eq("id", id);
-    onSubmitted();
+  async function reactivate(s) {
+    setBusy(true);
+    await supabase.from("profiles").update({ active: true, contribution_excluded: false }).eq("id", s.id);
+    if (s.contribution_excluded) {
+      const newTotal = Number(fundSettings?.total_collection || 0) + Number(s.total_contribution || 0);
+      await supabase.from("fund_settings").update({ total_collection: newTotal, updated_at: new Date().toISOString() }).eq("id", 1);
+    }
+    await onLog("Reactivated student", `${s.full_name || s.email}`);
+    setBusy(false);
+    onChanged();
   }
+
+  async function resetContribution(s) {
+    setBusy(true);
+    const oldAmount = Number(s.total_contribution || 0);
+    await supabase.from("profiles").update({ total_contribution: 0 }).eq("id", s.id);
+    if (!s.contribution_excluded) {
+      const newTotal = Number(fundSettings?.total_collection || 0) - oldAmount;
+      await supabase.from("fund_settings").update({ total_collection: newTotal, updated_at: new Date().toISOString() }).eq("id", 1);
+    }
+    await onLog("Reset contribution", `${s.full_name || s.email} — was ₹${oldAmount.toLocaleString("en-IN")}, reset to ₹0`);
+    setBusy(false);
+    setResetId(null);
+    onChanged();
+  }
+
+  const filtered = students.filter((s) => {
+    const q = search.trim().toLowerCase();
+    if (!q) return true;
+    return (s.full_name || "").toLowerCase().includes(q) || (s.email || "").toLowerCase().includes(q);
+  });
 
   return (
     <div>
       <div className="section-title">
-        Pay via UPI <span className="rule" />
+        Students ({students.length}) <span className="rule" />
       </div>
-      {upiId ? (
-        <div className="ledger-card">
-          <div className="qr-box">
-            {qrUrl && <img src={qrUrl} alt="UPI QR code" />}
-            <div className="upi-id">{upiId}</div>
-            <div className="card-sub">Scan or pay to this UPI ID, then log it below.</div>
-            <div style={{ display: "flex", gap: 8, width: "100%", marginTop: 6 }}>
-              <a className="btn" href={upiLink} style={{ flex: 1, textDecoration: "none" }}>
-                Pay via UPI app
-              </a>
-              <button type="button" className="btn btn-ghost" style={{ flex: 1 }} onClick={downloadQR}>
-                Download QR
-              </button>
+      <div className="field">
+        <input type="text" placeholder="Search by name or email…" value={search} onChange={(e) => setSearch(e.target.value)} />
+      </div>
+      <div className="card" style={{ marginBottom: 16 }}>
+        <div className="card-sub" style={{ lineHeight: 1.5 }}>
+          Students appear here automatically the first time they sign in with Google — there's nothing to
+          add manually. To fully delete a person's account, remove them from the Supabase dashboard under
+          Authentication.
+        </div>
+      </div>
+      {filtered.map((s) => (
+        <div className="card" key={s.id}>
+          <div className="card-row">
+            <div>
+              <div className="card-title">{s.full_name || "(no name yet)"}</div>
+              <div className="card-sub">{s.email}</div>
+              <div className="card-sub">
+                Contribution: ₹{Number(s.total_contribution || 0).toLocaleString("en-IN")}
+                {s.active === false && s.contribution_excluded ? " (excluded from total)" : ""}
+              </div>
             </div>
           </div>
-        </div>
-      ) : (
-        <div className="empty">The admin hasn't set up a payment UPI ID yet.</div>
-      )}
 
-      <div className="section-title">
-        Log your contribution <span className="rule" />
-      </div>
-      <form onSubmit={submit}>
-        {msg && <div className={`msg ${msg.type}`}>{msg.text}</div>}
-        <div className="field">
-          <label>Amount paid (₹)</label>
-          <input type="number" min="1" step="1" value={amount} onChange={(e) => setAmount(e.target.value)} required />
-        </div>
-        <div className="field">
-          <label>Reference / UTR number (optional)</label>
-          <input type="text" value={note} onChange={(e) => setNote(e.target.value)} placeholder="e.g. UPI ref number" />
-        </div>
-        <div className="field">
-          <label>Payment screenshot (required)</label>
-          <input
-            type="file"
-            accept="image/*"
-            required
-            onChange={(e) => setScreenshotFile(e.target.files[0] || null)}
-          />
-        </div>
-        <button className="btn" disabled={busy} type="submit">
-          {busy ? "Submitting…" : "Submit for verification"}
-        </button>
-      </form>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 10 }}>
+            {s.active === false ? (
+              <button className="btn btn-ghost btn-small" disabled={busy} onClick={() => reactivate(s)}>
+                Reactivate
+              </button>
+            ) : confirmId === s.id ? (
+              <>
+                <button className="btn btn-small" disabled={busy} onClick={() => deactivate(s, false)}>
+                  Deactivate — keep in total
+                </button>
+                <button className="btn btn-ghost btn-small" disabled={busy} onClick={() => deactivate(s, true)}>
+                  Deactivate — remove from total
+                </button>
+                <button className="btn btn-ghost btn-small" disabled={busy} onClick={() => setConfirmId(null)}>
+                  Cancel
+                </button>
+              </>
+            ) : (
+              <button className="btn btn-ghost btn-small" onClick={() => setConfirmId(s.id)}>
+                Deactivate
+              </button>
+            )}
 
+            {resetId === s.id ? (
+              <>
+                <button className="btn btn-danger btn-small" disabled={busy} onClick={() => resetContribution(s)}>
+                  Confirm reset to ₹0
+                </button>
+                <button className="btn btn-ghost btn-small" disabled={busy} onClick={() => setResetId(null)}>
+                  Cancel
+                </button>
+              </>
+            ) : (
+              <button className="btn btn-ghost btn-small" onClick={() => setResetId(s.id)}>
+                Reset contribution
+              </button>
+            )}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function Payments({ payments, fundSettings, onChanged, onLog }) {
+  const [busyId, setBusyId] = useState(null);
+
+  async function setStatus(p, status) {
+    setBusyId(p.id);
+    await supabase.from("payments").update({ status }).eq("id", p.id);
+    setBusyId(null);
+    onChanged();
+  }
+
+  async function deletePayment(p) {
+    setBusyId(p.id);
+    if (p.status === "verified") {
+      const { data: profile } = await supabase.from("profiles").select("total_contribution").eq("id", p.student_id).single();
+      const newContribution = Number(profile?.total_contribution || 0) - Number(p.amount);
+      await supabase.from("profiles").update({ total_contribution: newContribution }).eq("id", p.student_id);
+      const newTotal = Number(fundSettings?.total_collection || 0) - Number(p.amount);
+      await supabase.from("fund_settings").update({ total_collection: newTotal, updated_at: new Date().toISOString() }).eq("id", 1);
+    }
+    await supabase.from("payments").delete().eq("id", p.id);
+    await onLog(
+      "Deleted payment",
+      `${p.profiles?.full_name || p.profiles?.email} — ₹${Number(p.amount).toLocaleString("en-IN")} (was ${p.status})`
+    );
+    setBusyId(null);
+    onChanged();
+  }
+
+  const pending = payments.filter((p) => p.status === "pending");
+  const resolved = payments.filter((p) => p.status !== "pending");
+
+  return (
+    <div>
       <div className="section-title">
-        My submissions <span className="rule" />
+        Awaiting verification <span className="rule" />
       </div>
-      {payments.length === 0 && <div className="empty">Nothing submitted yet.</div>}
-      {payments.map((p) => (
+      {pending.length === 0 && <div className="empty">Nothing to verify right now.</div>}
+      {pending.map((p) => (
         <div className="card" key={p.id}>
           <div className="card-row">
             <div>
-              <div className="card-title">₹{Number(p.amount).toLocaleString("en-IN")}</div>
+              <div className="card-title">{p.profiles?.full_name || p.profiles?.email}</div>
               <div className="card-sub">
-                {new Date(p.created_at).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" })}
+                ₹{Number(p.amount).toLocaleString("en-IN")} ·{" "}
+                {new Date(p.created_at).toLocaleDateString("en-IN", { day: "numeric", month: "short" })}
                 {p.note ? ` · ${p.note}` : ""}
+              </div>
+            </div>
+          </div>
+          {p.screenshot_url && (
+            <a href={p.screenshot_url} target="_blank" rel="noreferrer">
+              <img
+                src={p.screenshot_url}
+                alt="Payment proof"
+                style={{ width: 90, height: 90, objectFit: "cover", borderRadius: 8, marginTop: 8 }}
+              />
+            </a>
+          )}
+          <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
+            <button className="btn btn-small" disabled={busyId === p.id} onClick={() => setStatus(p, "verified")}>
+              Verify
+            </button>
+            <button className="btn btn-ghost btn-small" disabled={busyId === p.id} onClick={() => setStatus(p, "rejected")}>
+              Reject
+            </button>
+            <button className="btn btn-ghost btn-small" disabled={busyId === p.id} onClick={() => deletePayment(p)}>
+              Delete
+            </button>
+          </div>
+        </div>
+      ))}
+
+      <div className="section-title">
+        History <span className="rule" />
+      </div>
+      {resolved.slice(0, 30).map((p) => (
+        <div className="card" key={p.id}>
+          <div className="card-row">
+            <div>
+              <div className="card-title">{p.profiles?.full_name || p.profiles?.email}</div>
+              <div className="card-sub">
+                ₹{Number(p.amount).toLocaleString("en-IN")} ·{" "}
+                {new Date(p.created_at).toLocaleDateString("en-IN", { day: "numeric", month: "short" })}
               </div>
             </div>
             <span className={`stamp ${p.status}`}>{p.status}</span>
@@ -405,63 +476,135 @@ function AddFund({ userId, fundSettings, payments, onSubmitted }) {
               />
             </a>
           )}
-          {p.status === "pending" && (
+          <button
+            className="btn btn-ghost btn-small"
+            style={{ marginTop: 8 }}
+            disabled={busyId === p.id}
+            onClick={() => deletePayment(p)}
+          >
+            Delete
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function Expenses({ expenses, students, onChanged, userId }) {
+  const [title, setTitle] = useState("");
+  const [amount, setAmount] = useState("");
+  const [spentOn, setSpentOn] = useState(() => new Date().toISOString().slice(0, 10));
+  const [note, setNote] = useState("");
+  const [applyWhole, setApplyWhole] = useState(true);
+  const [selectedStudents, setSelectedStudents] = useState([]);
+  const [busy, setBusy] = useState(false);
+
+  async function add(e) {
+    e.preventDefault();
+    setBusy(true);
+    const { data: inserted, error } = await supabase
+      .from("expenses")
+      .insert({
+        title,
+        amount: parseFloat(amount),
+        spent_on: spentOn,
+        note: note || null,
+        created_by: userId,
+      })
+      .select()
+      .single();
+
+    if (!error && inserted && !applyWhole && selectedStudents.length > 0) {
+      const rows = selectedStudents.map((sid) => ({ expense_id: inserted.id, student_id: sid }));
+      await supabase.from("expense_students").insert(rows);
+    }
+
+    setBusy(false);
+    setTitle("");
+    setAmount("");
+    setNote("");
+    setApplyWhole(true);
+    setSelectedStudents([]);
+    onChanged();
+  }
+
+  async function remove(id) {
+    await supabase.from("expenses").delete().eq("id", id);
+    onChanged();
+  }
+
+  return (
+    <div>
+      <div className="section-title">
+        Add expense <span className="rule" />
+      </div>
+      <form onSubmit={add}>
+        <div className="field">
+          <label>Title</label>
+          <input type="text" value={title} onChange={(e) => setTitle(e.target.value)} required />
+        </div>
+        <div className="field">
+          <label>Amount (₹)</label>
+          <input type="number" min="1" step="1" value={amount} onChange={(e) => setAmount(e.target.value)} required />
+        </div>
+        <div className="field">
+          <label>Date</label>
+          <input type="date" value={spentOn} onChange={(e) => setSpentOn(e.target.value)} required />
+        </div>
+        <div className="field">
+          <label>Note (optional)</label>
+          <input type="text" value={note} onChange={(e) => setNote(e.target.value)} />
+        </div>
+
+        <div className="field">
+          <label>Applies to</label>
+          <div style={{ display: "flex", gap: 8, marginBottom: applyWhole ? 0 : 10 }}>
             <button
-              className="btn btn-ghost btn-small"
-              style={{ marginTop: 10 }}
-              onClick={() => deletePending(p.id)}
+              type="button"
+              className={`btn btn-small ${applyWhole ? "" : "btn-ghost"}`}
+              onClick={() => setApplyWhole(true)}
             >
-              Delete this entry
+              Whole class
             </button>
+            <button
+              type="button"
+              className={`btn btn-small ${!applyWhole ? "" : "btn-ghost"}`}
+              onClick={() => setApplyWhole(false)}
+            >
+              Specific students
+            </button>
+          </div>
+          {!applyWhole && (
+            <div style={{ maxHeight: 200, overflowY: "auto", border: "1px solid var(--line)", borderRadius: 9, padding: 10 }}>
+              {students.map((s) => (
+                <label key={s.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 0", fontSize: 13.5 }}>
+                  <input
+                    type="checkbox"
+                    checked={selectedStudents.includes(s.id)}
+                    onChange={(e) => {
+                      setSelectedStudents((prev) =>
+                        e.target.checked ? [...prev, s.id] : prev.filter((id) => id !== s.id)
+                      );
+                    }}
+                  />
+                  {s.full_name || s.email}
+                </label>
+              ))}
+            </div>
           )}
         </div>
-      ))}
-    </div>
-  );
-}
 
-function Announcements({ items }) {
-  return (
-    <div>
-      <div className="section-title">
-        Announcements <span className="rule" />
-      </div>
-      {items.length === 0 && <div className="empty">No announcements yet.</div>}
-      {items.map((a) => (
-        <div className="card" key={a.id}>
-          <div className="card-title">{a.title}</div>
-          <div className="card-sub" style={{ marginTop: 6, lineHeight: 1.5 }}>
-            {a.body}
-          </div>
-          <div className="card-sub" style={{ marginTop: 8 }}>
-            {new Date(a.created_at).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" })}
-          </div>
-        </div>
-      ))}
-    </div>
-  );
-}
+        <button className="btn" disabled={busy} type="submit">
+          {busy ? "Adding…" : "Add expense"}
+        </button>
+      </form>
 
-function Expenses({ items, userId, activeCount }) {
-  const total = items.reduce((sum, e) => sum + Number(e.amount), 0);
-  return (
-    <div>
-      <div className="ledger-card">
-        <div className="ledger-row">
-          <span className="ledger-label">Total spent</span>
-          <span className="ledger-amount big">₹{total.toLocaleString("en-IN")}</span>
-        </div>
-      </div>
       <div className="section-title">
-        Expense log <span className="rule" />
+        All expenses <span className="rule" />
       </div>
-      {items.length === 0 && <div className="empty">No expenses recorded yet.</div>}
-      {items.map((e) => {
+      {expenses.map((e) => {
         const tagged = e.expense_students || [];
-        const appliesTo =
-          tagged.length > 0 ? tagged.map((t) => t.profiles?.full_name).filter(Boolean).join(", ") : "Whole class";
-        const includesMe = tagged.length > 0 ? tagged.some((t) => t.student_id === userId) : true;
-        const myShare = includesMe ? Number(e.amount) / (tagged.length > 0 ? tagged.length : Math.max(activeCount, 1)) : 0;
+        const appliesTo = tagged.length > 0 ? tagged.map((t) => t.profiles?.full_name).filter(Boolean).join(", ") : "Whole class";
         return (
           <div className="card" key={e.id}>
             <div className="card-row">
@@ -472,13 +615,13 @@ function Expenses({ items, userId, activeCount }) {
                   {e.note ? ` · ${e.note}` : ""}
                 </div>
                 <div className="card-sub" style={{ marginTop: 4 }}>Applies to: {appliesTo}</div>
-                {includesMe && (
-                  <div className="card-sub" style={{ marginTop: 2, color: "var(--rust)" }}>
-                    My share: −₹{myShare.toLocaleString("en-IN", { maximumFractionDigits: 0 })}
-                  </div>
-                )}
               </div>
-              <div className="card-amount">₹{Number(e.amount).toLocaleString("en-IN")}</div>
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <div className="card-amount">₹{Number(e.amount).toLocaleString("en-IN")}</div>
+                <button className="btn btn-ghost btn-small" onClick={() => remove(e.id)}>
+                  Delete
+                </button>
+              </div>
             </div>
           </div>
         );
@@ -487,52 +630,137 @@ function Expenses({ items, userId, activeCount }) {
   );
 }
 
-function Profile({ user, profile, onSaved }) {
-  const [fullName, setFullName] = useState(profile?.full_name || "");
-  const [phone, setPhone] = useState(profile?.phone || "");
+function Announcements({ items, onChanged, userId }) {
+  const [title, setTitle] = useState("");
+  const [body, setBody] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  async function add(e) {
+    e.preventDefault();
+    setBusy(true);
+    await supabase.from("announcements").insert({ title, body, created_by: userId });
+    setBusy(false);
+    setTitle("");
+    setBody("");
+    onChanged();
+  }
+
+  async function remove(id) {
+    await supabase.from("announcements").delete().eq("id", id);
+    onChanged();
+  }
+
+  return (
+    <div>
+      <div className="section-title">
+        Post announcement <span className="rule" />
+      </div>
+      <form onSubmit={add}>
+        <div className="field">
+          <label>Title</label>
+          <input type="text" value={title} onChange={(e) => setTitle(e.target.value)} required />
+        </div>
+        <div className="field">
+          <label>Message</label>
+          <textarea value={body} onChange={(e) => setBody(e.target.value)} required />
+        </div>
+        <button className="btn" disabled={busy} type="submit">
+          {busy ? "Posting…" : "Post announcement"}
+        </button>
+      </form>
+
+      <div className="section-title">
+        Posted <span className="rule" />
+      </div>
+      {items.map((a) => (
+        <div className="card" key={a.id}>
+          <div className="card-row">
+            <div className="card-title">{a.title}</div>
+            <button className="btn btn-ghost btn-small" onClick={() => remove(a.id)}>
+              Delete
+            </button>
+          </div>
+          <div className="card-sub" style={{ marginTop: 6, lineHeight: 1.5 }}>
+            {a.body}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function PaymentSetup({ fundSettings, onChanged }) {
+  const [upiId, setUpiId] = useState(fundSettings?.upi_id || "");
+  const [payeeName, setPayeeName] = useState(fundSettings?.payee_name || "");
+  const [goalAmount, setGoalAmount] = useState(fundSettings?.goal_amount || "");
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState(null);
+
+  const qrUrl = upiId
+    ? `https://api.qrserver.com/v1/create-qr-code/?size=240x240&data=${encodeURIComponent(
+        `upi://pay?pa=${upiId}&pn=${encodeURIComponent(payeeName || "Class Fund")}&cu=INR`
+      )}`
+    : null;
 
   async function save(e) {
     e.preventDefault();
     setBusy(true);
     setMsg(null);
     const { error } = await supabase
-      .from("profiles")
-      .update({ full_name: fullName, phone })
-      .eq("id", user.id);
+      .from("fund_settings")
+      .update({
+        upi_id: upiId,
+        payee_name: payeeName,
+        goal_amount: goalAmount ? parseFloat(goalAmount) : null,
+      })
+      .eq("id", 1);
     setBusy(false);
     if (error) {
       setMsg({ type: "err", text: error.message });
       return;
     }
-    setMsg({ type: "ok", text: "Profile updated." });
-    onSaved();
+    setMsg({ type: "ok", text: "Payment details updated. The QR below is what students will see." });
+    onChanged();
   }
 
   return (
     <div>
       <div className="section-title">
-        Profile <span className="rule" />
+        Payment details <span className="rule" />
       </div>
       <form onSubmit={save}>
         {msg && <div className={`msg ${msg.type}`}>{msg.text}</div>}
         <div className="field">
-          <label>Email</label>
-          <input type="text" value={user.email} disabled />
+          <label>UPI ID</label>
+          <input type="text" value={upiId} onChange={(e) => setUpiId(e.target.value)} placeholder="yourname@bank" required />
         </div>
         <div className="field">
-          <label>Full name</label>
-          <input type="text" value={fullName} onChange={(e) => setFullName(e.target.value)} required />
+          <label>Payee name (shown to students)</label>
+          <input type="text" value={payeeName} onChange={(e) => setPayeeName(e.target.value)} placeholder="Class Fund" />
         </div>
         <div className="field">
-          <label>Phone (optional)</label>
-          <input type="text" value={phone} onChange={(e) => setPhone(e.target.value)} />
+          <label>Fund goal / target (₹, optional)</label>
+          <input
+            type="number"
+            min="0"
+            value={goalAmount}
+            onChange={(e) => setGoalAmount(e.target.value)}
+            placeholder="e.g. 50000"
+          />
         </div>
         <button className="btn" disabled={busy} type="submit">
-          {busy ? "Saving…" : "Save changes"}
+          {busy ? "Saving…" : "Save payment details"}
         </button>
       </form>
+
+      {qrUrl && (
+        <div className="ledger-card" style={{ marginTop: 18 }}>
+          <div className="qr-box">
+            <img src={qrUrl} alt="UPI QR preview" />
+            <div className="card-sub">This QR is generated automatically from your UPI ID — nothing to upload.</div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
