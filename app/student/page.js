@@ -136,6 +136,7 @@ function computeMyShare(expenses, userId, activeCount) {
       const included = tagged.some((t) => t.student_id === userId);
       if (included) share += Number(e.amount) / tagged.length;
     } else {
+      // whole class
       share += Number(e.amount) / Math.max(activeCount, 1);
     }
   }
@@ -251,11 +252,33 @@ function AddFund({ userId, fundSettings, payments, onSubmitted }) {
 
   const upiId = fundSettings?.upi_id;
   const payeeName = fundSettings?.payee_name || "Class Fund";
+  const amt = parseFloat(amount);
   const qrUrl = upiId
     ? `https://api.qrserver.com/v1/create-qr-code/?size=240x240&data=${encodeURIComponent(
         `upi://pay?pa=${upiId}&pn=${encodeURIComponent(payeeName)}&cu=INR`
       )}`
     : null;
+  const upiLink = upiId
+    ? `upi://pay?pa=${upiId}&pn=${encodeURIComponent(payeeName)}&cu=INR${amt && amt > 0 ? `&am=${amt}` : ""}`
+    : null;
+
+  async function downloadQR() {
+    if (!qrUrl) return;
+    try {
+      const res = await fetch(qrUrl);
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "class-fund-qr.png";
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch {
+      window.open(qrUrl, "_blank");
+    }
+  }
 
   async function submit(e) {
     e.preventDefault();
@@ -316,6 +339,14 @@ function AddFund({ userId, fundSettings, payments, onSubmitted }) {
             {qrUrl && <img src={qrUrl} alt="UPI QR code" />}
             <div className="upi-id">{upiId}</div>
             <div className="card-sub">Scan or pay to this UPI ID, then log it below.</div>
+            <div style={{ display: "flex", gap: 8, width: "100%", marginTop: 6 }}>
+              <a className="btn" href={upiLink} style={{ flex: 1, textDecoration: "none" }}>
+                Pay via UPI app
+              </a>
+              <button type="button" className="btn btn-ghost" style={{ flex: 1 }} onClick={downloadQR}>
+                Download QR
+              </button>
+            </div>
           </div>
         </div>
       ) : (
@@ -504,4 +535,4 @@ function Profile({ user, profile, onSaved }) {
       </form>
     </div>
   );
-         }
+}
